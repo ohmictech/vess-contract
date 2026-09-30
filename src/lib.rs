@@ -11,7 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use stylus_sdk::{
-    alloy_primitives::{Address, FixedBytes, U256},
+    alloy_primitives::{address, Address, FixedBytes, U256},
     prelude::*,
     storage::{StorageFixedBytes, StorageMap, StorageU256},
 };
@@ -30,6 +30,18 @@ const MAX_FUTURE_SECS: u64 = 48 * 3600;
 /// Max expired nullifiers reaped per mint, so drain gas stays flat even after
 /// a long downtime (leftovers are cleaned on subsequent mints).
 const MAX_PRUNE_PER_MINT: u32 = 64;
+
+/// Dev levy. On a hit, the mint also credits `DEV_ADDRESS` with the same
+/// amount as the miner's reward — purely additive emission, nothing is taken
+/// from the miner. Expected cost is 1/256 (~0.39%) of all issuance.
+///
+/// The **last** byte of the proof hash is tested on purpose: `check_difficulty`
+/// consumes *leading* zero bits, so the final byte is statistically independent
+/// of `diff_bits` and the levy rate is the same at every difficulty.
+const DEV_LEVY_BYTE: u8 = 0x2a; // 42 — the proof is a 42-cycle
+
+/// Immutable: compiled into the bytecode, so changing it requires a redeploy.
+const DEV_ADDRESS: Address = address!("0xEaE62E201407B623bbb22aA5D3c19bFfEbE79b6D");
 
 /// ABI-encode a revert reason as standard Solidity `Error(string)` (selector
 /// 0x08c379a0) so explorers, wallets, and tooling decode it natively.
@@ -223,6 +235,15 @@ impl Vess {
 
         // ── reward ──────────────────────────────────────────────────────
         let reward = block_reward(diff_bits);
+
+        // ── dev levy ────────────────────────────────────────────────────
+        // 1-in-256: when the proof hash's last byte matches, the dev address is
+        // credited the same amount as the miner. Additive emission, not a tax.
+        // Placed after verify + difficulty so invalid proofs never pay it.
+        if pow_hash[31] == DEV_LEVY_BYTE {
+            self._mint(DEV_ADDRESS, U256::from(reward));
+        }
+
         self._mint(recipient, U256::from(reward));
 
         Ok(true)
